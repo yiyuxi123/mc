@@ -1,0 +1,5 @@
+{
+  "name": "AI Craft",
+  "description": "A 3D voxel building game with an AI Guide and Image Analyzer.",
+  "requestFramePermissions": []
+}
