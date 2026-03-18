@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 const noise2D = createNoise2D();
 
-export type BlockType = 'dirt' | 'grass' | 'stone' | 'wood' | 'leaves' | 'glass' | 'iron_ore' | 'wheat_seeds' | 'wheat' | 'chest' | 'npc';
+export type BlockType = 'dirt' | 'grass' | 'stone' | 'wood' | 'leaves' | 'glass' | 'iron_ore' | 'wheat_seeds' | 'wheat' | 'chest' | 'npc' | 'torch' | 'flower' | 'tnt' | 'slime' | 'jetpack' | 'water' | 'nuke' | 'laser' | 'bedrock';
 
 export interface Block {
   id: string;
@@ -18,15 +18,40 @@ export interface InventoryItem {
   count: number;
 }
 
+export interface Drop {
+  id: string;
+  type: string;
+  pos: [number, number, number];
+}
+
 interface GameState {
   blocks: Record<string, Block>;
   inventory: InventoryItem[];
   activeItemIndex: number;
   setActiveItemIndex: (index: number) => void;
   addBlock: (x: number, y: number, z: number, type: BlockType) => boolean;
-  removeBlock: (x: number, y: number, z: number) => void;
+  removeBlock: (x: number, y: number, z: number, dropItem?: boolean) => void;
+  explode: (x: number, y: number, z: number, radius: number) => void;
+  explosionEvent: { x: number, y: number, z: number, radius: number, time: number } | null;
+  primedTnts: { id: string, pos: [number, number, number], progress: number }[];
+  addPrimedTnt: (pos: [number, number, number]) => void;
+  removePrimedTnt: (id: string) => void;
   generateWorld: () => void;
+  updateChunks: (px: number, pz: number) => void;
+  time: number;
+  setTime: (time: number) => void;
+  loadedChunks: Record<string, boolean>;
+  visibleBlocks: Record<string, Block>;
   
+  // Drops
+  drops: Drop[];
+  addDrop: (type: string, pos: [number, number, number]) => void;
+  removeDrop: (id: string) => void;
+
+  // Inventory UI
+  isInventoryOpen: boolean;
+  setInventoryOpen: (open: boolean) => void;
+
   // Chat & AI
   chatMessages: { id: string; text: string; sender: 'user' | 'ai' }[];
   addChatMessage: (text: string, sender: 'user' | 'ai') => void;
@@ -48,6 +73,7 @@ interface GameState {
   craftItem: (recipeId: string) => void;
   addToInventory: (type: string, count: number) => void;
   removeFromInventory: (type: string, count: number) => boolean;
+  swapInventoryItems: (index1: number, index2: number) => void;
   
   // Quests & Story
   quests: {
@@ -65,6 +91,10 @@ const getPosKey = (x: number, y: number, z: number) => `${Math.round(x)},${Math.
 
 export const useStore = create<GameState>((set, get) => ({
   blocks: {},
+  loadedChunks: {},
+  visibleBlocks: {},
+  time: 0,
+  setTime: (time) => set({ time }),
   inventory: [
     { type: 'dirt', count: 64 },
     { type: 'grass', count: 64 },
@@ -72,10 +102,27 @@ export const useStore = create<GameState>((set, get) => ({
     { type: 'wood', count: 64 },
     { type: 'leaves', count: 64 },
     { type: 'glass', count: 64 },
+    { type: 'torch', count: 64 },
+    { type: 'tnt', count: 64 },
+    { type: 'slime', count: 64 },
+    { type: 'jetpack', count: 1 },
+    { type: 'nuke', count: 10 },
+    { type: 'laser', count: 1 },
   ],
   activeItemIndex: 0,
   setActiveItemIndex: (index) => set({ activeItemIndex: index }),
   
+  drops: [],
+  addDrop: (type, pos) => set((state) => ({ drops: [...state.drops, { id: uuidv4(), type, pos }] })),
+  removeDrop: (id) => set((state) => ({ drops: state.drops.filter(d => d.id !== id) })),
+
+  isInventoryOpen: false,
+  setInventoryOpen: (open) => set({ isInventoryOpen: open }),
+  explosionEvent: null,
+  primedTnts: [],
+  addPrimedTnt: (pos) => set((state) => ({ primedTnts: [...state.primedTnts, { id: uuidv4(), pos, progress: 0 }] })),
+  removePrimedTnt: (id) => set((state) => ({ primedTnts: state.primedTnts.filter(t => t.id !== id) })),
+
   addToInventory: (type, count) => set((state) => {
     const newInv = [...state.inventory];
     const existing = newInv.find(i => i.type === type);
@@ -105,6 +152,16 @@ export const useStore = create<GameState>((set, get) => ({
     });
     return success;
   },
+  
+  swapInventoryItems: (index1: number, index2: number) => set((state) => {
+    const newInv = [...state.inventory];
+    if (index1 >= 0 && index1 < newInv.length && index2 >= 0 && index2 < newInv.length) {
+      const temp = newInv[index1];
+      newInv[index1] = newInv[index2];
+      newInv[index2] = temp;
+    }
+    return { inventory: newInv };
+  }),
 
   addBlock: (x, y, z, type) => {
     const key = getPosKey(x, y, z);
@@ -118,15 +175,19 @@ export const useStore = create<GameState>((set, get) => ({
         const newProgress = farmQuest.progress + 1;
         const completed = newProgress >= farmQuest.target;
         if (completed) {
-          state.addChatMessage('Quest Completed: Built a farm! Reward: 5 Bread.', 'ai');
+          state.addChatMessage('任务完成：建立农场！奖励：5 个面包。', 'ai');
           setTimeout(() => get().addToInventory('bread', 5), 100);
         }
         set({
           blocks: { ...state.blocks, [key]: { id: uuidv4(), pos: [x, y, z], type } },
+          visibleBlocks: { ...state.visibleBlocks, [key]: { id: uuidv4(), pos: [x, y, z], type } },
           quests: { ...state.quests, build_farm: { ...farmQuest, progress: newProgress, completed } }
         });
       } else {
-        set({ blocks: { ...state.blocks, [key]: { id: uuidv4(), pos: [x, y, z], type } } });
+        set({ 
+          blocks: { ...state.blocks, [key]: { id: uuidv4(), pos: [x, y, z], type } },
+          visibleBlocks: { ...state.visibleBlocks, [key]: { id: uuidv4(), pos: [x, y, z], type } }
+        });
       }
 
       // Grow wheat after 10 seconds
@@ -134,7 +195,8 @@ export const useStore = create<GameState>((set, get) => ({
         const currentBlocks = get().blocks;
         if (currentBlocks[key] && currentBlocks[key].type === 'wheat_seeds') {
           set((s) => ({
-            blocks: { ...s.blocks, [key]: { ...s.blocks[key], type: 'wheat' } }
+            blocks: { ...s.blocks, [key]: { ...s.blocks[key], type: 'wheat' } },
+            visibleBlocks: { ...s.visibleBlocks, [key]: { ...s.visibleBlocks[key], type: 'wheat' } }
           }));
         }
       }, 10000);
@@ -146,12 +208,16 @@ export const useStore = create<GameState>((set, get) => ({
       blocks: {
         ...state.blocks,
         [key]: { id: uuidv4(), pos: [x, y, z], type }
+      },
+      visibleBlocks: {
+        ...state.visibleBlocks,
+        [key]: { id: uuidv4(), pos: [x, y, z], type }
       }
     });
     return true;
   },
   
-  removeBlock: (x, y, z) => {
+  removeBlock: (x, y, z, dropItem = true) => {
     const state = get();
     const key = getPosKey(x, y, z);
     const block = state.blocks[key];
@@ -159,79 +225,200 @@ export const useStore = create<GameState>((set, get) => ({
     
     const newBlocks = { ...state.blocks };
     delete newBlocks[key];
+    const newVisibleBlocks = { ...state.visibleBlocks };
+    delete newVisibleBlocks[key];
     
     // Drops
-    let dropType = block.type as string;
-    if (block.type === 'grass' && Math.random() < 0.3) {
-      setTimeout(() => get().addToInventory('wheat_seeds', 1), 10);
+    if (dropItem) {
+      let dropType = block.type as string;
+      if (block.type === 'grass' && Math.random() < 0.3) {
+        get().addDrop('wheat_seeds', [x, y, z]);
+      }
+      get().addDrop(dropType, [x, y, z]);
     }
-    setTimeout(() => get().addToInventory(dropType, 1), 10);
     
     // Quest: Find Ruin (breaking the chest)
     if (block.type === 'chest') {
       const ruinQuest = state.quests.find_ruin;
       if (!ruinQuest.completed) {
-        state.addChatMessage('Quest Completed: Found the Ancient Ruin! Reward: Diamond.', 'ai');
+        state.addChatMessage('任务完成：找到古老遗迹！奖励：1 颗钻石。', 'ai');
         setTimeout(() => get().addToInventory('diamond', 1), 100);
-        set({ blocks: newBlocks, quests: { ...state.quests, find_ruin: { ...ruinQuest, progress: 1, completed: true } } });
+        set({ blocks: newBlocks, visibleBlocks: newVisibleBlocks, quests: { ...state.quests, find_ruin: { ...ruinQuest, progress: 1, completed: true } } });
         return;
       }
     }
     
-    set({ blocks: newBlocks });
+    set({ blocks: newBlocks, visibleBlocks: newVisibleBlocks });
   },
-  
-  generateWorld: () => {
-    const newBlocks: Record<string, Block> = {};
-    const size = 30; // 60x60 world
-    for (let x = -size; x <= size; x++) {
-      for (let z = -size; z <= size; z++) {
-        const y = Math.floor(noise2D(x / 30, z / 30) * 8);
-        const key = getPosKey(x, y, z);
-        
-        // Biomes based on noise
-        let surfaceType: BlockType = 'grass';
-        if (y > 4) surfaceType = 'stone'; // Mountains
-        else if (y < -2) surfaceType = 'dirt'; // Valley
-        
-        newBlocks[key] = { id: uuidv4(), pos: [x, y, z], type: surfaceType };
-        
-        for (let dy = y - 1; dy >= y - 3; dy--) {
-          newBlocks[getPosKey(x, dy, z)] = { id: uuidv4(), pos: [x, dy, z], type: 'dirt' };
-        }
-        for (let dy = y - 4; dy >= -10; dy--) {
-          const isIron = Math.random() < 0.05;
-          newBlocks[getPosKey(x, dy, z)] = { id: uuidv4(), pos: [x, dy, z], type: isIron ? 'iron_ore' : 'stone' };
+
+  explode: (x: number, y: number, z: number, radius: number) => {
+    const state = get();
+    const newBlocks = { ...state.blocks };
+    const newVisibleBlocks = { ...state.visibleBlocks };
+    let exploded = false;
+
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dz = -radius; dz <= radius; dz++) {
+          if (dx * dx + dy * dy + dz * dz <= radius * radius) {
+            const key = getPosKey(x + dx, y + dy, z + dz);
+            if (newBlocks[key] && newBlocks[key].type !== 'bedrock') {
+              if (newBlocks[key].type === 'tnt') {
+                // Chain reaction!
+                const tntPos = newBlocks[key].pos;
+                delete newBlocks[key];
+                delete newVisibleBlocks[key];
+                // Add primed TNT with a slight random delay so they don't all explode at the exact same frame
+                setTimeout(() => {
+                  get().addPrimedTnt(tntPos);
+                }, Math.random() * 200);
+              } else {
+                delete newBlocks[key];
+                delete newVisibleBlocks[key];
+                exploded = true;
+                // Add some drops randomly
+                if (Math.random() < 0.2) {
+                  get().addDrop('dirt', [x + dx, y + dy, z + dz]);
+                }
+              }
+            }
+          }
         }
       }
     }
+
+    if (exploded) {
+      set({ 
+        blocks: newBlocks,
+        visibleBlocks: newVisibleBlocks,
+        explosionEvent: { x, y, z, radius, time: Date.now() }
+      });
+      import('../utils/sounds').then(m => m.playSound('break'));
+    }
+  },
+  
+  updateChunks: (px: number, pz: number) => {
+    const state = get();
+    const CHUNK_SIZE = 16;
+    const RENDER_DISTANCE = 3; // chunks
     
-    // Trees
-    for (let i = 0; i < 30; i++) {
-      const tx = Math.floor(Math.random() * (size * 2)) - size;
-      const tz = Math.floor(Math.random() * (size * 2)) - size;
-      const ty = Math.floor(noise2D(tx / 30, tz / 30) * 8) + 1;
-      
-      for (let h = 0; h < 4; h++) newBlocks[getPosKey(tx, ty + h, tz)] = { id: uuidv4(), pos: [tx, ty + h, tz], type: 'wood' };
-      for (let lx = -2; lx <= 2; lx++) {
-        for (let lz = -2; lz <= 2; lz++) {
-          for (let ly = 3; ly <= 5; ly++) {
-            if (Math.abs(lx) === 2 && Math.abs(lz) === 2 && ly === 5) continue;
-            if (lx === 0 && lz === 0 && ly < 5) continue;
-            const key = getPosKey(tx + lx, ty + ly, tz + lz);
-            if (!newBlocks[key]) newBlocks[key] = { id: uuidv4(), pos: [tx + lx, ty + ly, tz + lz], type: 'leaves' };
+    const cx = Math.floor(px / CHUNK_SIZE);
+    const cz = Math.floor(pz / CHUNK_SIZE);
+    
+    // Check if we moved to a new chunk
+    const currentChunkKey = `${cx},${cz}`;
+    if ((state as any).lastChunkKey === currentChunkKey) return;
+    
+    let chunksUpdated = false;
+    const newLoadedChunks = { ...state.loadedChunks };
+    const newBlocks = { ...state.blocks };
+    
+    for (let x = cx - RENDER_DISTANCE; x <= cx + RENDER_DISTANCE; x++) {
+      for (let z = cz - RENDER_DISTANCE; z <= cz + RENDER_DISTANCE; z++) {
+        const chunkKey = `${x},${z}`;
+        if (!newLoadedChunks[chunkKey]) {
+          newLoadedChunks[chunkKey] = true;
+          chunksUpdated = true;
+          
+          const startX = x * CHUNK_SIZE;
+          const startZ = z * CHUNK_SIZE;
+          
+          for (let bx = 0; bx < CHUNK_SIZE; bx++) {
+            for (let bz = 0; bz < CHUNK_SIZE; bz++) {
+              const worldX = startX + bx;
+              const worldZ = startZ + bz;
+              const y = Math.floor(noise2D(worldX / 40, worldZ / 40) * 10);
+              const key = getPosKey(worldX, y, worldZ);
+              
+              let surfaceType: BlockType = 'grass';
+              if (y > 5) surfaceType = 'stone';
+              else if (y < -3) surfaceType = 'dirt';
+              
+              newBlocks[key] = { id: uuidv4(), pos: [worldX, y, worldZ], type: surfaceType };
+
+              if (surfaceType === 'grass' && Math.random() < 0.05) {
+                newBlocks[getPosKey(worldX, y + 1, worldZ)] = { id: uuidv4(), pos: [worldX, y + 1, worldZ], type: 'flower' };
+              }
+              
+              for (let dy = y - 1; dy >= y - 2; dy--) {
+                newBlocks[getPosKey(worldX, dy, worldZ)] = { id: uuidv4(), pos: [worldX, dy, worldZ], type: 'dirt' };
+              }
+              for (let dy = y - 3; dy >= y - 4; dy--) {
+                const isIron = Math.random() < 0.05;
+                newBlocks[getPosKey(worldX, dy, worldZ)] = { id: uuidv4(), pos: [worldX, dy, worldZ], type: isIron ? 'iron_ore' : 'stone' };
+              }
+
+              // Water level
+              const WATER_LEVEL = -2;
+              if (y < WATER_LEVEL) {
+                for (let wy = y + 1; wy <= WATER_LEVEL; wy++) {
+                  newBlocks[getPosKey(worldX, wy, worldZ)] = { id: uuidv4(), pos: [worldX, wy, worldZ], type: 'water' };
+                }
+              }
+            }
+          }
+          
+          // Trees
+          for (let i = 0; i < 2; i++) {
+            const tx = startX + Math.floor(Math.random() * CHUNK_SIZE);
+            const tz = startZ + Math.floor(Math.random() * CHUNK_SIZE);
+            if (Math.abs(tx) < 3 && Math.abs(tz) < 3) continue;
+            const ty = Math.floor(noise2D(tx / 40, tz / 40) * 10) + 1;
+            if (ty <= 5 && ty >= -3) {
+              for (let h = 0; h < 4; h++) newBlocks[getPosKey(tx, ty + h, tz)] = { id: uuidv4(), pos: [tx, ty + h, tz], type: 'wood' };
+              for (let lx = -2; lx <= 2; lx++) {
+                for (let lz = -2; lz <= 2; lz++) {
+                  for (let ly = 3; ly <= 5; ly++) {
+                    if (Math.abs(lx) === 2 && Math.abs(lz) === 2 && ly === 5) continue;
+                    if (lx === 0 && lz === 0 && ly < 5) continue;
+                    const key = getPosKey(tx + lx, ty + ly, tz + lz);
+                    if (!newBlocks[key]) newBlocks[key] = { id: uuidv4(), pos: [tx + lx, ty + ly, tz + lz], type: 'leaves' };
+                  }
+                }
+              }
+            }
           }
         }
       }
     }
     
+    // Always update visible blocks when crossing chunk boundary
+    const newVisibleBlocks: Record<string, Block> = {};
+    const minX = (cx - RENDER_DISTANCE) * CHUNK_SIZE;
+    const maxX = (cx + RENDER_DISTANCE + 1) * CHUNK_SIZE;
+    const minZ = (cz - RENDER_DISTANCE) * CHUNK_SIZE;
+    const maxZ = (cz + RENDER_DISTANCE + 1) * CHUNK_SIZE;
+    
+    for (const key in newBlocks) {
+      const b = newBlocks[key];
+      if (b.pos[0] >= minX && b.pos[0] < maxX && b.pos[2] >= minZ && b.pos[2] < maxZ) {
+        newVisibleBlocks[key] = b;
+      }
+    }
+    
+    set({ 
+      blocks: newBlocks, 
+      loadedChunks: newLoadedChunks, 
+      visibleBlocks: newVisibleBlocks,
+      lastChunkKey: currentChunkKey 
+    } as any);
+  },
+  
+  generateWorld: () => {
+    // Initial generation
+    get().updateChunks(0, 0);
+    
+    // Add NPC and Ruin near spawn
+    const state = get();
+    const newBlocks = { ...state.blocks };
+    
     // NPC
-    newBlocks[getPosKey(0, Math.floor(noise2D(0, 0) * 8) + 1, 5)] = { id: uuidv4(), pos: [0, Math.floor(noise2D(0, 0) * 8) + 1, 5], type: 'npc' };
+    newBlocks[getPosKey(0, Math.floor(noise2D(0, 0) * 10) + 1, 5)] = { id: uuidv4(), pos: [0, Math.floor(noise2D(0, 0) * 10) + 1, 5], type: 'npc' };
     
     // Ancient Ruin
-    const rx = 20;
-    const rz = 20;
-    const ry = Math.floor(noise2D(rx / 30, rz / 30) * 8) + 1;
+    const rx = 15;
+    const rz = 15;
+    const ry = Math.floor(noise2D(rx / 40, rz / 40) * 10) + 1;
     for (let x = -2; x <= 2; x++) {
       for (let z = -2; z <= 2; z++) {
         for (let y = 0; y < 4; y++) {
@@ -246,7 +433,7 @@ export const useStore = create<GameState>((set, get) => ({
     set({ blocks: newBlocks });
   },
   
-  chatMessages: [{ id: uuidv4(), text: 'Welcome to AI Craft! Press T to chat with the AI Guide, or I to analyze an image. Press C to open Crafting.', sender: 'ai' }],
+  chatMessages: [{ id: uuidv4(), text: '欢迎来到 AI Craft！按 T 与 AI 向导聊天，或按 I 分析图像。按 C 打开制作菜单。', sender: 'ai' }],
   addChatMessage: (text, sender) => set((state) => ({ chatMessages: [...state.chatMessages, { id: uuidv4(), text, sender }] })),
   isChatOpen: false,
   setChatOpen: (open) => set({ isChatOpen: open }),
@@ -273,7 +460,7 @@ export const useStore = create<GameState>((set, get) => ({
     if (recipeId === 'iron_pickaxe' && state.removeFromInventory('iron_ore', 10)) {
       state.addToInventory('iron_pickaxe', 1);
       if (!state.quests.craft_iron_pickaxe.completed) {
-        state.addChatMessage('Quest Completed: Crafted an Iron Pickaxe! Reward: 10 Wood.', 'ai');
+        state.addChatMessage('任务完成：制作铁镐！奖励：10 个木头。', 'ai');
         state.addToInventory('wood', 10);
         set({ quests: { ...state.quests, craft_iron_pickaxe: { progress: 1, target: 1, completed: true } } });
       }
@@ -281,6 +468,8 @@ export const useStore = create<GameState>((set, get) => ({
       state.addToInventory('wooden_axe', 1);
     } else if (recipeId === 'bread' && state.removeFromInventory('wheat', 3)) {
       state.addToInventory('bread', 1);
+    } else if (recipeId === 'torch' && state.removeFromInventory('wood', 1)) {
+      state.addToInventory('torch', 4);
     }
   },
   
@@ -298,7 +487,7 @@ export const useStore = create<GameState>((set, get) => ({
         const newProgress = [...q.progress, value];
         const completed = newProgress.length >= q.target;
         if (completed) {
-          state.addChatMessage('Quest Completed: Found 3 biomes! Reward: 5 Iron Ore.', 'ai');
+          state.addChatMessage('任务完成：找到 3 种生物群落！奖励：5 个铁矿石。', 'ai');
           setTimeout(() => get().addToInventory('iron_ore', 5), 100);
         }
         set({ quests: { ...state.quests, find_biomes: { ...q, progress: newProgress, completed } } });
