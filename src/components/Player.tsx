@@ -24,18 +24,16 @@ export const Player = () => {
     shift: false,
   });
 
-  const isChatOpen = useStore((state) => state.isChatOpen);
-  const isImageAnalyzerOpen = useStore((state) => state.isImageAnalyzerOpen);
-  const isCraftingOpen = useStore((state) => state.isCraftingOpen);
-  const isInventoryOpen = useStore((state) => state.isInventoryOpen);
   const explosionEvent = useStore((state) => state.explosionEvent);
   const lastExplosionTime = useRef(0);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const state = useStore.getState();
       if (e.code === 'KeyE') {
-        const newState = !useStore.getState().isInventoryOpen;
-        useStore.getState().setInventoryOpen(newState);
+        if (state.isChatOpen || state.isImageAnalyzerOpen || state.isCraftingOpen) return;
+        const newState = !state.isInventoryOpen;
+        state.setInventoryOpen(newState);
         if (newState) {
           document.exitPointerLock();
         } else {
@@ -43,7 +41,7 @@ export const Player = () => {
         }
         return;
       }
-      if (isChatOpen || isImageAnalyzerOpen || isCraftingOpen || useStore.getState().isInventoryOpen) return;
+      if (state.isChatOpen || state.isImageAnalyzerOpen || state.isCraftingOpen || state.isInventoryOpen) return;
       if (e.code === 'KeyW') keys.current.w = true;
       if (e.code === 'KeyA') keys.current.a = true;
       if (e.code === 'KeyS') keys.current.s = true;
@@ -66,13 +64,13 @@ export const Player = () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
     };
-  }, [isChatOpen, isImageAnalyzerOpen, isCraftingOpen]);
+  }, []);
 
   const checkCollision = (p: THREE.Vector3, blocks: Record<string, any>) => {
     const minX = Math.round(p.x - 0.5);
     const maxX = Math.round(p.x + 0.5);
-    const minY = Math.round(p.y - 1.0);
-    const maxY = Math.round(p.y + 1.0);
+    const minY = Math.round(p.y - 1.5);
+    const maxY = Math.round(p.y + 0.8);
     const minZ = Math.round(p.z - 0.5);
     const maxZ = Math.round(p.z + 0.5);
 
@@ -80,16 +78,25 @@ export const Player = () => {
       for (let y = minY; y <= maxY; y++) {
         for (let z = minZ; z <= maxZ; z++) {
           const block = blocks[`${x},${y},${z}`];
-          if (block && block.type !== 'water' && block.type !== 'flower' && block.type !== 'torch') {
+          if (block && block.type === 'cactus') {
+            const state = useStore.getState();
+            // Simple damage cooldown using a global or ref, but for now just random chance to simulate cooldown
+            if (Math.random() < 0.05) {
+              state.setHealth(state.health - 1);
+              import('../utils/sounds').then(m => m.playSound('hit'));
+            }
+          }
+          if (block && block.type !== 'water' && block.type !== 'flower' && block.type !== 'torch' && block.type !== 'cactus') {
             const bx = x;
             const by = y;
             const bz = z;
-            // Player AABB: width 0.6, height 1.6
+            // Player AABB: width 0.6, feet at p.y - 1.5, head at p.y + 0.8
             // Block AABB: width 1, height 1
             if (
               Math.abs(p.x - bx) < 0.8 &&
-              Math.abs(p.y - by) < 1.3 &&
-              Math.abs(p.z - bz) < 0.8
+              Math.abs(p.z - bz) < 0.8 &&
+              p.y - 1.5 < by + 0.5 &&
+              p.y + 0.8 > by - 0.5
             ) {
               return true;
             }
@@ -124,7 +131,7 @@ export const Player = () => {
     const currentSpeed = keys.current.shift ? SPEED * 1.5 : SPEED;
 
     const px = Math.round(pos.current.x);
-    const py = Math.floor(pos.current.y); // Feet level
+    const py = Math.floor(pos.current.y - 1.5); // Feet level
     const pz = Math.round(pos.current.z);
     const inWater = blocks[`${px},${py},${pz}`]?.type === 'water' || blocks[`${px},${py+1},${pz}`]?.type === 'water';
 
@@ -215,7 +222,7 @@ export const Player = () => {
         
         // Check if landing on slime block
         const blockX = Math.round(pos.current.x);
-        const blockY = Math.round(pos.current.y - 1.3);
+        const blockY = Math.round(pos.current.y - 1.6);
         const blockZ = Math.round(pos.current.z);
         const blockBelow = blocks[`${blockX},${blockY},${blockZ}`];
         

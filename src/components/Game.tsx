@@ -1,4 +1,4 @@
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree, events } from '@react-three/fiber';
 import { PointerLockControls, Sky, Stars } from '@react-three/drei';
 import { World, BreakingEffect } from './World';
 import { Player } from './Player';
@@ -6,6 +6,7 @@ import { Drops } from './Drops';
 import { UI } from './UI';
 import { BGM } from './BGM';
 import { MiniMap } from './MiniMap';
+import { Weather } from './Weather';
 import { useEffect, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import * as THREE from 'three';
@@ -18,6 +19,13 @@ const DayNightCycle = () => {
   
   useFrame(({ clock, camera }) => {
     const t = clock.getElapsedTime() * 0.01; // Slower day/night cycle
+    
+    // Randomly toggle rain every few minutes
+    if (Math.random() < 0.0001) {
+      const state = useStore.getState();
+      state.setRaining(!state.isRaining);
+    }
+    
     const sunDistance = 100;
     const x = Math.cos(t) * sunDistance;
     const y = Math.sin(t) * sunDistance;
@@ -40,8 +48,27 @@ const DayNightCycle = () => {
 
     if (ambientRef.current && hemiRef.current) {
       const isDay = y > 0;
-      ambientRef.current.intensity = isDay ? 0.6 : 0.2;
-      hemiRef.current.intensity = isDay ? 0.4 : 0.1;
+      
+      // Check if player is inside
+      let isInside = false;
+      const px = Math.round(camera.position.x);
+      const py = Math.round(camera.position.y);
+      const pz = Math.round(camera.position.z);
+      const blocks = useStore.getState().blocks;
+      for (let cy = py; cy < py + 20; cy++) {
+        const block = blocks[`${px},${cy},${pz}`];
+        if (block && block.type !== 'glass' && block.type !== 'water' && block.type !== 'torch' && block.type !== 'flower') {
+          isInside = true;
+          break;
+        }
+      }
+
+      const targetAmbient = isInside ? 0.05 : (isDay ? 0.6 : 0.2);
+      const targetHemi = isInside ? 0.05 : (isDay ? 0.4 : 0.1);
+      
+      // Smooth transition
+      ambientRef.current.intensity += (targetAmbient - ambientRef.current.intensity) * 0.1;
+      hemiRef.current.intensity += (targetHemi - hemiRef.current.intensity) * 0.1;
     }
   });
 
@@ -72,24 +99,55 @@ const DayNightCycle = () => {
 
 export const Game = () => {
   const generateWorld = useStore((state) => state.generateWorld);
-  const blocks = useStore((state) => state.blocks);
+  const isWorldGenerated = useStore((state) => Object.keys(state.blocks).length > 0);
 
   useEffect(() => {
     generateWorld();
   }, [generateWorld]);
 
-  const isWorldGenerated = Object.keys(blocks).length > 0;
-
   return (
-    <div id="game-container" className="w-full h-screen bg-black overflow-hidden relative font-sans">
+    <div 
+      id="game-container" 
+      className="w-full h-screen bg-black overflow-hidden relative font-sans"
+      onContextMenu={(e) => e.preventDefault()}
+    >
       {isWorldGenerated && (
         <Canvas 
-          shadows 
+          shadows={{ type: THREE.PCFShadowMap }} 
           camera={{ fov: 75 }} 
-          onPointerMissed={() => { (window as any).currentHoveredBlock = null; }}
+          events={(store) => ({
+            ...events(store),
+            compute: (event, state) => {
+              if (document.pointerLockElement) {
+                state.pointer.set(0, 0);
+                state.raycaster.setFromCamera(state.pointer, state.camera);
+              } else {
+                const clientX = (event as any).clientX ?? (event as any).touches?.[0]?.clientX;
+                const clientY = (event as any).clientY ?? (event as any).touches?.[0]?.clientY;
+                if (clientX !== undefined && clientY !== undefined) {
+                  const x = (clientX / state.size.width) * 2 - 1;
+                  const y = -(clientY / state.size.height) * 2 + 1;
+                  state.pointer.set(x, y);
+                }
+                state.raycaster.setFromCamera(state.pointer, state.camera);
+              }
+            }
+          })}
+          onPointerMissed={(e) => { 
+            (window as any).currentHoveredBlock = null; 
+            if (e.button === 2) {
+              const state = useStore.getState();
+              const activeItem = state.inventory[state.activeItemIndex];
+              if (activeItem && activeItem.type === 'bread' && activeItem.count > 0) {
+                state.eatFood();
+                import('../utils/sounds').then(m => m.playSound('break'));
+              }
+            }
+          }}
           onPointerUp={() => { (window as any).currentBreakingBlock = null; }}
         >
           <DayNightCycle />
+          <Weather />
           <Player />
           <World />
           <Drops />

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { chatWithGuide, analyzeImage } from '../services/gemini';
 import { MessageSquare, Image as ImageIcon, X, Send, Upload, Heart, Drumstick, Hammer, ScrollText, Backpack } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { textureDataURIs } from '../utils/textures';
+import { checkRecipe } from '../utils/crafting';
 
 const itemNames: Record<string, string> = {
   dirt: '泥土',
@@ -26,7 +28,11 @@ const itemNames: Record<string, string> = {
   jetpack: '喷气背包',
   water: '水',
   nuke: '核弹',
-  laser: '激光枪'
+  laser: '激光枪',
+  crafting_table: '合成工作台',
+  sand: '沙子',
+  snow: '雪块',
+  cactus: '仙人掌'
 };
 
 export const UI = () => {
@@ -51,8 +57,38 @@ export const UI = () => {
     setNpcDialogue,
     isInventoryOpen,
     setInventoryOpen,
-    swapInventoryItems
-  } = useStore();
+    swapInventoryItems,
+    craftingGrid,
+    setCraftingGrid,
+    addToInventory,
+    removeFromInventory
+  } = useStore(useShallow(state => ({
+    inventory: state.inventory,
+    activeItemIndex: state.activeItemIndex,
+    setActiveItemIndex: state.setActiveItemIndex,
+    chatMessages: state.chatMessages,
+    addChatMessage: state.addChatMessage,
+    isChatOpen: state.isChatOpen,
+    setChatOpen: state.setChatOpen,
+    isImageAnalyzerOpen: state.isImageAnalyzerOpen,
+    setImageAnalyzerOpen: state.setImageAnalyzerOpen,
+    health: state.health,
+    hunger: state.hunger,
+    eatFood: state.eatFood,
+    isCraftingOpen: state.isCraftingOpen,
+    setCraftingOpen: state.setCraftingOpen,
+    craftItem: state.craftItem,
+    quests: state.quests,
+    npcDialogue: state.npcDialogue,
+    setNpcDialogue: state.setNpcDialogue,
+    isInventoryOpen: state.isInventoryOpen,
+    setInventoryOpen: state.setInventoryOpen,
+    swapInventoryItems: state.swapInventoryItems,
+    craftingGrid: state.craftingGrid,
+    setCraftingGrid: state.setCraftingGrid,
+    addToInventory: state.addToInventory,
+    removeFromInventory: state.removeFromInventory
+  })));
 
   const [chatInput, setChatInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -61,6 +97,7 @@ export const UI = () => {
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [selectedInventoryItem, setSelectedInventoryItem] = useState<number | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -75,6 +112,20 @@ export const UI = () => {
         setImageAnalyzerOpen(false);
         setCraftingOpen(false);
         setInventoryOpen(false);
+        
+        // Return crafting items to inventory if closing
+        const state = useStore.getState();
+        const grid = state.craftingGrid;
+        let changed = false;
+        const newGrid = [...grid];
+        for (let i = 0; i < 9; i++) {
+          if (newGrid[i]) {
+            state.addToInventory(newGrid[i]!.type, newGrid[i]!.count);
+            newGrid[i] = null;
+            changed = true;
+          }
+        }
+        if (changed) state.setCraftingGrid(newGrid);
       }
     };
 
@@ -84,17 +135,23 @@ export const UI = () => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'KeyT' && !isChatOpen && !isImageAnalyzerOpen && !isCraftingOpen && !isInventoryOpen) {
+      const state = useStore.getState();
+      if (e.code === 'KeyT' && !state.isChatOpen && !state.isImageAnalyzerOpen && !state.isCraftingOpen && !state.isInventoryOpen) {
         e.preventDefault();
         setChatOpen(true);
         document.exitPointerLock();
       }
-      if (e.code === 'KeyI' && !isChatOpen && !isImageAnalyzerOpen && !isCraftingOpen && !isInventoryOpen) {
+      if (e.code === 'KeyI' && !state.isChatOpen && !state.isImageAnalyzerOpen && !state.isCraftingOpen && !state.isInventoryOpen) {
         e.preventDefault();
         setImageAnalyzerOpen(true);
         document.exitPointerLock();
       }
-      if (e.code === 'KeyC' && !isChatOpen && !isImageAnalyzerOpen && !isCraftingOpen && !isInventoryOpen) {
+      if (e.code === 'KeyE' && !state.isChatOpen && !state.isImageAnalyzerOpen && !state.isCraftingOpen && !state.isInventoryOpen) {
+        e.preventDefault();
+        setInventoryOpen(true);
+        document.exitPointerLock();
+      }
+      if (e.code === 'KeyC' && !state.isChatOpen && !state.isImageAnalyzerOpen && !state.isCraftingOpen && !state.isInventoryOpen) {
         e.preventDefault();
         setCraftingOpen(true);
         document.exitPointerLock();
@@ -108,7 +165,7 @@ export const UI = () => {
       }
       
       // Hotbar selection
-      if (!isChatOpen && !isImageAnalyzerOpen && !isCraftingOpen && !isInventoryOpen) {
+      if (!state.isChatOpen && !state.isImageAnalyzerOpen && !state.isCraftingOpen && !state.isInventoryOpen) {
         const num = parseInt(e.key);
         if (num >= 1 && num <= 9) {
           setActiveItemIndex(num - 1);
@@ -117,8 +174,23 @@ export const UI = () => {
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isChatOpen, isImageAnalyzerOpen, isCraftingOpen, isInventoryOpen, setActiveItemIndex, setChatOpen, setImageAnalyzerOpen, setCraftingOpen, setInventoryOpen, setNpcDialogue]);
+    
+    const handleWheel = (e: WheelEvent) => {
+      const state = useStore.getState();
+      if (state.isChatOpen || state.isImageAnalyzerOpen || state.isCraftingOpen || state.isInventoryOpen) return;
+      if (e.deltaY > 0) {
+        setActiveItemIndex((state.activeItemIndex + 1) % 9);
+      } else if (e.deltaY < 0) {
+        setActiveItemIndex((state.activeItemIndex - 1 + 9) % 9);
+      }
+    };
+    window.addEventListener('wheel', handleWheel);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('wheel', handleWheel);
+    };
+  }, [setActiveItemIndex, setChatOpen, setImageAnalyzerOpen, setCraftingOpen, setInventoryOpen, setNpcDialogue]);
 
   const handleChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -213,17 +285,17 @@ export const UI = () => {
       </div>
 
       {/* Controls Hint */}
-      <div className="absolute top-4 right-4 bg-black/50 text-white/80 p-4 rounded-xl text-sm backdrop-blur-sm">
+      <div className="absolute top-64 right-4 bg-black/50 text-white/80 p-4 rounded-xl text-sm backdrop-blur-sm">
         <p className="font-bold mb-2 text-white">操作指南</p>
         <p>W, A, S, D - 移动</p>
         <p>Space - 跳跃</p>
         <p>左键 - 破坏/交互</p>
-        <p>右键 - 放置方块</p>
-        <p>1-9 - 选择物品</p>
+        <p>右键 - 放置/使用物品</p>
+        <p>滚轮/1-9 - 切换物品</p>
         <p className="mt-2 text-emerald-400 font-medium">T - 打开 AI 聊天</p>
         <p className="text-blue-400 font-medium">I - AI 蓝图分析</p>
         <p className="text-amber-400 font-medium">C - 制作菜单</p>
-        <p className="text-red-400 font-medium">E - 吃食物</p>
+        <p className="text-red-400 font-medium">E - 打开背包</p>
         <p>ESC - 关闭菜单</p>
       </div>
 
@@ -335,65 +407,125 @@ export const UI = () => {
       {isCraftingOpen && (
         <div 
           onPointerDown={(e) => e.stopPropagation()}
-          className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 w-[500px] bg-black/90 rounded-2xl border border-white/10 flex flex-col pointer-events-auto backdrop-blur-md shadow-2xl"
+          className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 w-[600px] bg-black/90 rounded-2xl border border-white/10 flex flex-col pointer-events-auto backdrop-blur-md shadow-2xl"
         >
           <div className="flex items-center justify-between p-4 border-b border-white/10 bg-white/5">
             <div className="flex items-center gap-2 text-amber-400">
               <Hammer size={18} />
-              <span className="font-medium">制作</span>
+              <span className="font-medium">合成工作台</span>
             </div>
             <button onClick={() => setCraftingOpen(false)} className="text-white/50 hover:text-white transition-colors">
               <X size={18} />
             </button>
           </div>
-          <div className="p-4 grid grid-cols-1 gap-4">
-            <div className="bg-white/5 p-4 rounded-xl flex justify-between items-center">
-              <div>
-                <p className="font-bold text-white">铁镐</p>
-                <p className="text-sm text-white/50">需要：10 铁矿石</p>
+          <div className="p-6 flex gap-8">
+            {/* Inventory Selection */}
+            <div className="flex-1">
+              <p className="text-white/70 mb-2 text-sm">背包物品 (点击选择)</p>
+              <div className="grid grid-cols-4 gap-2 max-h-64 overflow-y-auto pr-2">
+                {inventory.map((item, index) => {
+                  if (!item || item.count <= 0) return null;
+                  return (
+                    <div 
+                      key={index}
+                      onClick={() => setSelectedInventoryItem(index)}
+                      className={`relative aspect-square bg-white/5 rounded-lg border flex items-center justify-center cursor-pointer hover:bg-white/10 transition-colors ${selectedInventoryItem === index ? 'border-amber-400' : 'border-white/10'}`}
+                    >
+                      <img 
+                        src={textureDataURIs[item.type]} 
+                        alt={item.type} 
+                        className="w-8 h-8 object-contain pixelated"
+                        title={itemNames[item.type] || item.type}
+                      />
+                      <span className="text-white text-[10px] absolute bottom-1 right-1 font-bold">{item.count}</span>
+                    </div>
+                  );
+                })}
               </div>
-              <button 
-                onClick={() => craftItem('iron_pickaxe')}
-                className="bg-amber-500/20 text-amber-400 px-4 py-2 rounded-lg hover:bg-amber-500/30 transition-colors"
-              >
-                制作
-              </button>
             </div>
-            <div className="bg-white/5 p-4 rounded-xl flex justify-between items-center">
-              <div>
-                <p className="font-bold text-white">木斧</p>
-                <p className="text-sm text-white/50">需要：5 木头</p>
+
+            {/* Crafting Grid */}
+            <div className="flex flex-col items-center justify-center">
+              <p className="text-white/70 mb-2 text-sm">合成区 (点击放置/取回)</p>
+              <div className="flex items-center gap-4">
+                <div className="grid grid-cols-3 gap-1 bg-white/5 p-2 rounded-xl border border-white/10">
+                  {craftingGrid.map((item, index) => (
+                    <div 
+                      key={index}
+                      onClick={() => {
+                        const newGrid = [...craftingGrid];
+                        if (item) {
+                          // Return to inventory
+                          addToInventory(item.type, 1);
+                          newGrid[index] = null;
+                        } else if (selectedInventoryItem !== null) {
+                          // Place from inventory
+                          const invItem = inventory[selectedInventoryItem];
+                          if (invItem && invItem.count > 0) {
+                            removeFromInventory(invItem.type, 1);
+                            newGrid[index] = { type: invItem.type, count: 1 };
+                          }
+                        }
+                        setCraftingGrid(newGrid);
+                      }}
+                      className="w-12 h-12 bg-black/50 rounded border border-white/10 flex items-center justify-center cursor-pointer hover:bg-white/10 transition-colors relative"
+                    >
+                      {item && (
+                        <img 
+                          src={textureDataURIs[item.type]} 
+                          alt={item.type} 
+                          className="w-8 h-8 object-contain pixelated"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+                
+                <div className="text-white/50">➔</div>
+                
+                {/* Result Slot */}
+                <div 
+                  className="w-16 h-16 bg-white/10 rounded-xl border-2 border-amber-400/50 flex items-center justify-center cursor-pointer hover:bg-white/20 transition-colors relative"
+                  onClick={() => {
+                    const result = checkRecipe(craftingGrid.map(i => i?.type || null));
+                    if (result) {
+                      addToInventory(result.type, result.count);
+                      setCraftingGrid(Array(9).fill(null));
+                      import('../utils/sounds').then(m => m.playSound('break'));
+                      
+                      // Quest check
+                      if (result.type === 'iron_pickaxe') {
+                        const state = useStore.getState();
+                        if (!state.quests.craft_iron_pickaxe.completed) {
+                          state.addChatMessage('任务完成：制作铁镐！奖励：10 个木头。', 'ai');
+                          state.addToInventory('wood', 10);
+                          useStore.setState({ quests: { ...state.quests, craft_iron_pickaxe: { progress: 1, target: 1, completed: true } } });
+                        }
+                      }
+                    }
+                  }}
+                >
+                  {(() => {
+                    const result = checkRecipe(craftingGrid.map(i => i?.type || null));
+                    if (result) {
+                      return (
+                        <>
+                          <img 
+                            src={textureDataURIs[result.type]} 
+                            alt={result.type} 
+                            className="w-10 h-10 object-contain pixelated"
+                            title={itemNames[result.type] || result.type}
+                          />
+                          {result.count > 1 && (
+                            <span className="text-white text-xs absolute bottom-1 right-1 font-bold">{result.count}</span>
+                          )}
+                        </>
+                      );
+                    }
+                    return null;
+                  })()}
+                </div>
               </div>
-              <button 
-                onClick={() => craftItem('wooden_axe')}
-                className="bg-amber-500/20 text-amber-400 px-4 py-2 rounded-lg hover:bg-amber-500/30 transition-colors"
-              >
-                制作
-              </button>
-            </div>
-            <div className="bg-white/5 p-4 rounded-xl flex justify-between items-center">
-              <div>
-                <p className="font-bold text-white">面包</p>
-                <p className="text-sm text-white/50">需要：3 小麦</p>
-              </div>
-              <button 
-                onClick={() => craftItem('bread')}
-                className="bg-amber-500/20 text-amber-400 px-4 py-2 rounded-lg hover:bg-amber-500/30 transition-colors"
-              >
-                制作
-              </button>
-            </div>
-            <div className="bg-white/5 p-4 rounded-xl flex justify-between items-center">
-              <div>
-                <p className="font-bold text-white">火把 (x4)</p>
-                <p className="text-sm text-white/50">需要：1 木头</p>
-              </div>
-              <button 
-                onClick={() => craftItem('torch')}
-                className="bg-amber-500/20 text-amber-400 px-4 py-2 rounded-lg hover:bg-amber-500/30 transition-colors"
-              >
-                制作
-              </button>
             </div>
           </div>
         </div>

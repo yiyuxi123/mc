@@ -48,6 +48,11 @@ const generateTexture = (type: string) => {
     for (let i = 0; i < 100; i++) {
       ctx.fillRect(Math.random() * size, Math.random() * 16, 2, 2);
     }
+  } else if (type === 'grass_top') {
+    ctx.fillStyle = '#41980a';
+    ctx.fillRect(0, 0, size, size);
+    addNoise('#357a08', 300, 2, 2);
+    addNoise('#52b80d', 200, 2, 2);
   } else if (type === 'stone') {
     ctx.fillStyle = '#7d7d7d';
     ctx.fillRect(0, 0, size, size);
@@ -104,6 +109,16 @@ const generateTexture = (type: string) => {
     for (let i = 0; i < 15; i++) {
       ctx.fillRect(Math.random() * size, Math.random() * size, 4, 4);
     }
+  } else if (type === 'sand') {
+    ctx.fillStyle = '#e3cfa1';
+    ctx.fillRect(0, 0, size, size);
+    addNoise('#d1ba8a', 300, 2, 2);
+    addNoise('#f0e0b9', 200, 2, 2);
+  } else if (type === 'snow') {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    addNoise('#e0e0e0', 200, 2, 2);
+    addNoise('#f5f5f5', 300, 2, 2);
   } else if (type === 'wheat_seeds') {
     ctx.fillStyle = '#5c3a21'; // dirt background
     ctx.fillRect(0, 0, size, size);
@@ -122,6 +137,32 @@ const generateTexture = (type: string) => {
     ctx.fillStyle = '#d1ad32';
     ctx.fillRect(18, 0, 4, size);
     ctx.fillRect(42, 0, 4, size);
+  } else if (type === 'cactus') {
+    ctx.fillStyle = '#0f5e0f';
+    ctx.fillRect(0, 0, size, size);
+    addNoise('#1a7a1a', 400, 4, 4);
+    ctx.fillStyle = '#000000';
+    for (let i = 0; i < 40; i++) {
+      ctx.fillRect(Math.random() * size, Math.random() * size, 2, 2);
+    }
+  } else if (type === 'crafting_table') {
+    ctx.fillStyle = '#8b5a2b';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#5c4033';
+    ctx.fillRect(0, 0, size, 16);
+    ctx.fillStyle = '#3e2723';
+    for (let i = 0; i < size; i += 16) {
+      for (let j = 0; j < 16; j += 16) {
+        ctx.strokeRect(i, j, 16, 16);
+      }
+    }
+    // Tools on side
+    ctx.fillStyle = '#7d7d7d';
+    ctx.fillRect(10, 30, 4, 20);
+    ctx.fillRect(20, 30, 4, 20);
+    ctx.fillStyle = '#8b4513';
+    ctx.fillRect(10, 50, 4, 10);
+    ctx.fillRect(20, 50, 4, 10);
   } else if (type === 'chest') {
     ctx.fillStyle = '#8b5a2b';
     ctx.fillRect(0, 0, size, size);
@@ -273,6 +314,15 @@ const generateTexture = (type: string) => {
   } else if (type === 'water') {
     ctx.fillStyle = 'rgba(0, 100, 255, 0.6)';
     ctx.fillRect(0, 0, size, size);
+    // Add some wave lines
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+    for (let i = 0; i < 5; i++) {
+      ctx.fillRect(Math.random() * size, Math.random() * size, Math.random() * 20 + 10, 2);
+    }
+    ctx.fillStyle = 'rgba(0, 50, 200, 0.3)';
+    for (let i = 0; i < 5; i++) {
+      ctx.fillRect(Math.random() * size, Math.random() * size, Math.random() * 20 + 10, 2);
+    }
   } else if (type === 'nuke') {
     ctx.fillStyle = '#111111';
     ctx.fillRect(0, 0, size, size);
@@ -294,17 +344,34 @@ const generateTexture = (type: string) => {
     ctx.fillRect(0, 0, size, size);
     ctx.fillStyle = '#e098ae';
     addNoise('#e098ae', 100, 4, 4);
-    // Eyes
-    ctx.fillStyle = '#000';
-    ctx.fillRect(16, 24, 8, 8);
-    ctx.fillRect(40, 24, 8, 8);
-    // Snout
-    ctx.fillStyle = '#d68a9f';
-    ctx.fillRect(24, 36, 16, 12);
-    ctx.fillStyle = '#8a4b5d';
-    ctx.fillRect(28, 40, 4, 4);
-    ctx.fillRect(32, 40, 4, 4);
+    // Eyes (Cute)
+    ctx.fillStyle = '#fff'; // Sclera
+    ctx.fillRect(12, 24, 12, 12);
+    ctx.fillRect(40, 24, 12, 12);
+    ctx.fillStyle = '#000'; // Pupil
+    ctx.fillRect(16, 28, 8, 8);
+    ctx.fillRect(40, 28, 8, 8);
+  } else if (type === 'pig_body') {
+    ctx.fillStyle = '#f5b5c8';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#e098ae';
+    addNoise('#e098ae', 100, 4, 4);
   } else if (type === 'cow') {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, size, size);
+    // Spots (Dark gray, not black)
+    ctx.fillStyle = '#333';
+    ctx.fillRect(8, 8, 16, 24);
+    ctx.fillRect(40, 32, 16, 16);
+    ctx.fillRect(24, 48, 16, 16);
+    // Eyes (Cute)
+    ctx.fillStyle = '#fff'; // Sclera
+    ctx.fillRect(12, 24, 12, 12);
+    ctx.fillRect(40, 24, 12, 12);
+    ctx.fillStyle = '#000'; // Pupil
+    ctx.fillRect(16, 28, 8, 8);
+    ctx.fillRect(40, 28, 8, 8);
+  } else if (type === 'cow_body') {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, size, size);
     // Spots
@@ -312,13 +379,18 @@ const generateTexture = (type: string) => {
     ctx.fillRect(8, 8, 16, 24);
     ctx.fillRect(40, 32, 16, 16);
     ctx.fillRect(24, 48, 16, 16);
-    // Eyes
-    ctx.fillStyle = '#000';
-    ctx.fillRect(16, 24, 8, 8);
-    ctx.fillRect(40, 24, 8, 8);
-    // Snout
+  } else if (type === 'pig_snout') {
+    ctx.fillStyle = '#d68a9f';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#8a4b5d';
+    ctx.fillRect(16, 24, 8, 16);
+    ctx.fillRect(40, 24, 8, 16);
+  } else if (type === 'cow_snout') {
     ctx.fillStyle = '#e8b4b8';
-    ctx.fillRect(16, 40, 32, 16);
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#8a4b5d';
+    ctx.fillRect(16, 24, 8, 16);
+    ctx.fillRect(40, 24, 8, 16);
   }
 
   textureDataURIs[type] = canvas.toDataURL();
@@ -327,8 +399,13 @@ const generateTexture = (type: string) => {
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
   // Fix texture bleeding
-  texture.wrapS = THREE.ClampToEdgeWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
+  if (type === 'water') {
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+  } else {
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+  }
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 };
@@ -336,6 +413,9 @@ const generateTexture = (type: string) => {
 export const textures = {
   dirt: generateTexture('dirt'),
   grass: generateTexture('grass'),
+  grass_top: generateTexture('grass_top'),
+  snow: generateTexture('snow'),
+  sand: generateTexture('sand'),
   stone: generateTexture('stone'),
   wood: generateTexture('wood'),
   leaves: generateTexture('leaves'),
@@ -343,6 +423,8 @@ export const textures = {
   iron_ore: generateTexture('iron_ore'),
   wheat_seeds: generateTexture('wheat_seeds'),
   wheat: generateTexture('wheat'),
+  cactus: generateTexture('cactus'),
+  crafting_table: generateTexture('crafting_table'),
   chest: generateTexture('chest'),
   npc: generateTexture('npc'),
   iron_pickaxe: generateTexture('iron_pickaxe'),
@@ -358,5 +440,9 @@ export const textures = {
   nuke: generateTexture('nuke'),
   laser: generateTexture('laser'),
   pig: generateTexture('pig'),
+  pig_body: generateTexture('pig_body'),
+  pig_snout: generateTexture('pig_snout'),
   cow: generateTexture('cow'),
+  cow_body: generateTexture('cow_body'),
+  cow_snout: generateTexture('cow_snout'),
 };

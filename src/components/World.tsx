@@ -1,9 +1,52 @@
 import { useStore } from '../store/useStore';
 import { textures } from '../utils/textures';
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useLayoutEffect, useRef, memo } from 'react';
 import * as THREE from 'three';
 import { ThreeEvent, useFrame } from '@react-three/fiber';
 import { Animals } from './Animals';
+
+const crossGeometry = new THREE.BufferGeometry();
+const vertices = new Float32Array([
+  // Plane 1 (diagonal)
+  -0.4, -0.5, -0.4,
+   0.4, -0.5,  0.4,
+  -0.4,  0.5, -0.4,
+
+   0.4, -0.5,  0.4,
+   0.4,  0.5,  0.4,
+  -0.4,  0.5, -0.4,
+
+  // Plane 2 (other diagonal)
+  -0.4, -0.5,  0.4,
+   0.4, -0.5, -0.4,
+  -0.4,  0.5,  0.4,
+
+   0.4, -0.5, -0.4,
+   0.4,  0.5, -0.4,
+  -0.4,  0.5,  0.4,
+]);
+const uvs = new Float32Array([
+  // Plane 1
+  0, 0,
+  1, 0,
+  0, 1,
+
+  1, 0,
+  1, 1,
+  0, 1,
+
+  // Plane 2
+  0, 0,
+  1, 0,
+  0, 1,
+
+  1, 0,
+  1, 1,
+  0, 1,
+]);
+crossGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+crossGeometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+crossGeometry.computeVertexNormals();
 
 export const BreakingEffect = () => {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -82,7 +125,7 @@ export const BreakingEffect = () => {
   });
   
   return (
-    <mesh ref={meshRef} visible={false}>
+    <mesh ref={meshRef} visible={false} raycast={() => null}>
       <boxGeometry args={[1.02, 1.02, 1.02]} />
       <meshBasicMaterial ref={materialRef} color="white" transparent opacity={0.5} depthWrite={false} />
     </mesh>
@@ -113,30 +156,24 @@ export const TargetHighlight = () => {
   });
 
   return (
-    <lineSegments ref={meshRef} visible={false}>
+    <lineSegments ref={meshRef} visible={false} raycast={() => null}>
       <edgesGeometry args={[new THREE.BoxGeometry(1, 1, 1)]} />
       <lineBasicMaterial color="black" linewidth={2} />
     </lineSegments>
   );
 };
 
-const BlockTypeMesh = ({ type, blocks }: { type: string; blocks: any[] }) => {
+const MAX_INSTANCES = 40000;
+
+const BlockTypeMesh = memo(({ type, blocks }: { type: string; blocks: any[] }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
-
-  const addBlock = useStore((state) => state.addBlock);
-  const inventory = useStore((state) => state.inventory);
-  const activeItemIndex = useStore((state) => state.activeItemIndex);
-
-  const isChatOpen = useStore((state) => state.isChatOpen);
-  const isImageAnalyzerOpen = useStore((state) => state.isImageAnalyzerOpen);
-  const isCraftingOpen = useStore((state) => state.isCraftingOpen);
-  const isInventoryOpen = useStore((state) => state.isInventoryOpen);
+  const displayBlocks = blocks.slice(0, MAX_INSTANCES);
 
   // Update instanced mesh matrices
   useLayoutEffect(() => {
     if (!meshRef.current) return;
     const dummy = new THREE.Object3D();
-    blocks.forEach((block, i) => {
+    displayBlocks.forEach((block, i) => {
       let yOffset = 0;
       if (type === 'torch') yOffset = -0.1;
       else if (type === 'flower') yOffset = -0.2;
@@ -146,28 +183,60 @@ const BlockTypeMesh = ({ type, blocks }: { type: string; blocks: any[] }) => {
       meshRef.current!.setMatrixAt(i, dummy.matrix);
     });
     meshRef.current.instanceMatrix.needsUpdate = true;
-    meshRef.current.computeBoundingSphere();
-  }, [blocks, type]);
+  }, [displayBlocks, type]);
 
   const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
-    if (isChatOpen || isImageAnalyzerOpen || isCraftingOpen || isInventoryOpen) return;
+    const state = useStore.getState();
+    if (state.isChatOpen || state.isImageAnalyzerOpen || state.isCraftingOpen || state.isInventoryOpen) return;
     if (e.instanceId === undefined) return;
     
-    const block = blocks[e.instanceId];
+    const block = displayBlocks[e.instanceId];
     if (!block) return;
 
     if (block.type === 'npc') {
-      useStore.getState().setNpcDialogue("你好，旅行者！我听说这片土地上隐藏着一个古老遗迹。去寻找它吧，里面藏有巨大的宝藏。但要小心，你必须先活下来。收集资源，建立农场，并制作坚固的工具！");
+      state.setNpcDialogue("你好，旅行者！我听说这片土地上隐藏着一个古老遗迹。去寻找它吧，里面藏有巨大的宝藏。但要小心，你必须先活下来。收集资源，建立农场，并制作坚固的工具！");
       return;
     }
 
     if (e.button === 2) {
-      // Right click: Place block
-      const activeItem = inventory[activeItemIndex];
+      // Right click: Place block or use item
+      
+      if (block.type === 'crafting_table') {
+        state.setCraftingOpen(true);
+        document.exitPointerLock();
+        return;
+      }
+
+      const activeItem = state.inventory[state.activeItemIndex];
       if (!activeItem || activeItem.count <= 0) return;
       
-      const placeableBlocks = ['dirt', 'grass', 'stone', 'wood', 'leaves', 'glass', 'wheat_seeds', 'wheat', 'chest', 'torch', 'flower', 'tnt', 'slime', 'nuke', 'iron_ore', 'water', 'bedrock'];
+      if (activeItem.type === 'bread') {
+        useStore.getState().eatFood();
+        import('../utils/sounds').then(m => m.playSound('break')); // Maybe a munch sound?
+        return;
+      }
+      
+      if (block.type === 'tnt' && activeItem.type === 'torch') {
+        import('../utils/sounds').then(m => m.playSound('break'));
+        useStore.getState().addChatMessage('TNT已点燃！', 'ai');
+        useStore.getState().removeBlock(block.pos[0], block.pos[1], block.pos[2], false);
+        useStore.getState().addPrimedTnt(block.pos);
+        return;
+      }
+
+      if (block.type === 'nuke' && activeItem.type === 'torch') {
+        import('../utils/sounds').then(m => m.playSound('break'));
+        useStore.getState().addChatMessage('警告：核弹已启动！', 'ai');
+        useStore.getState().removeBlock(block.pos[0], block.pos[1], block.pos[2], false);
+        // Explode immediately with huge radius
+        setTimeout(() => {
+          useStore.getState().explode(block.pos[0], block.pos[1], block.pos[2], 12);
+        }, 1000);
+        return;
+      }
+      
+      const placeableBlocks = ['dirt', 'grass', 'stone', 'wood', 'leaves', 'glass', 'wheat_seeds', 'wheat', 'chest', 'torch', 'flower', 'tnt', 'slime', 'nuke', 'iron_ore', 'water', 'bedrock', 'sand', 'snow', 'crafting_table'];
       if (!placeableBlocks.includes(activeItem.type)) return;
       
       const faceIndex = Math.floor((e.faceIndex || 0) / 2);
@@ -188,43 +257,34 @@ const BlockTypeMesh = ({ type, blocks }: { type: string; blocks: any[] }) => {
       
       if (
         Math.abs(pos.x - px) < 0.8 &&
-        Math.abs(pos.y - py) < 1.3 &&
-        Math.abs(pos.z - pz) < 0.8
+        Math.abs(pos.z - pz) < 0.8 &&
+        py - 1.5 < pos.y + 0.5 &&
+        py + 0.3 > pos.y - 0.5
       ) {
         return; // Cannot place block inside player
       }
 
-      const success = addBlock(pos.x, pos.y, pos.z, activeItem.type as any);
+      const success = state.addBlock(pos.x, pos.y, pos.z, activeItem.type as any);
       if (success) {
-        useStore.getState().removeFromInventory(activeItem.type, 1);
+        state.removeFromInventory(activeItem.type, 1);
         import('../utils/sounds').then(m => m.playSound('place'));
       }
     } else if (e.button === 0) {
       // Left click: Start breaking block
-      const activeItem = inventory[activeItemIndex];
+      const activeItem = state.inventory[state.activeItemIndex];
       if (activeItem && activeItem.type === 'laser') {
         import('../utils/sounds').then(m => m.playSound('laser'));
-        useStore.getState().removeBlock(block.pos[0], block.pos[1], block.pos[2]);
+        state.removeBlock(block.pos[0], block.pos[1], block.pos[2]);
         return;
       }
 
       if (block.type === 'tnt') {
         // Ignite TNT
         import('../utils/sounds').then(m => m.playSound('break')); // Hiss sound?
-        useStore.getState().addChatMessage('TNT 已点燃！快跑！', 'ai');
+        state.addChatMessage('TNT 已点燃！快跑！', 'ai');
         
-        useStore.getState().removeBlock(block.pos[0], block.pos[1], block.pos[2]);
-        useStore.getState().addPrimedTnt(block.pos);
-        return;
-      }
-      if (block.type === 'nuke') {
-        import('../utils/sounds').then(m => m.playSound('break'));
-        useStore.getState().addChatMessage('警告：核弹已启动！', 'ai');
-        useStore.getState().removeBlock(block.pos[0], block.pos[1], block.pos[2]);
-        // Explode immediately with huge radius
-        setTimeout(() => {
-          useStore.getState().explode(block.pos[0], block.pos[1], block.pos[2], 12);
-        }, 1000);
+        state.removeBlock(block.pos[0], block.pos[1], block.pos[2]);
+        state.addPrimedTnt(block.pos);
         return;
       }
       (window as any).currentBreakingBlock = { pos: block.pos, progress: 0, type: block.type };
@@ -244,13 +304,21 @@ const BlockTypeMesh = ({ type, blocks }: { type: string; blocks: any[] }) => {
 
   const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
-    if (isChatOpen || isImageAnalyzerOpen || isCraftingOpen || isInventoryOpen) return;
+    const state = useStore.getState();
+    if (state.isChatOpen || state.isImageAnalyzerOpen || state.isCraftingOpen || state.isInventoryOpen) return;
     if (e.instanceId === undefined) return;
-    const block = blocks[e.instanceId];
+    const block = displayBlocks[e.instanceId];
     if (block) {
       (window as any).currentHoveredBlock = block;
     }
   };
+
+  useFrame(({ clock }) => {
+    if (type === 'water' && textures.water) {
+      textures.water.offset.x = clock.getElapsedTime() * 0.1;
+      textures.water.offset.y = clock.getElapsedTime() * 0.1;
+    }
+  });
 
   const texture = textures[type as keyof typeof textures];
 
@@ -258,22 +326,61 @@ const BlockTypeMesh = ({ type, blocks }: { type: string; blocks: any[] }) => {
     <>
       <instancedMesh 
         ref={meshRef} 
-        args={[undefined, undefined, blocks.length]} 
-        castShadow={type !== 'torch' && type !== 'flower'} 
+        args={[null as any, null as any, MAX_INSTANCES]} 
+        count={displayBlocks.length}
+        castShadow={type !== 'torch' && type !== 'flower' && type !== 'water' && type !== 'glass'} 
         receiveShadow 
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
-        onPointerOut={handlePointerOut}
-        onPointerMove={handlePointerMove}
+        frustumCulled={false}
+        onPointerDown={type === 'water' ? undefined : handlePointerDown}
+        onPointerUp={type === 'water' ? undefined : handlePointerUp}
+        onPointerOut={type === 'water' ? undefined : handlePointerOut}
+        onPointerMove={type === 'water' ? undefined : handlePointerMove}
+        raycast={type === 'water' ? () => null : undefined}
       >
-        {type === 'torch' ? (
-          <boxGeometry args={[0.2, 0.8, 0.2]} />
-        ) : type === 'flower' ? (
-          <boxGeometry args={[0.6, 0.6, 0.6]} />
+        {type === 'flower' || type === 'torch' ? (
+          <primitive object={crossGeometry} attach="geometry" />
+        ) : type === 'cactus' ? (
+          <boxGeometry args={[0.8, 1, 0.8]} />
         ) : (
           <boxGeometry args={[1, 1, 1]} />
         )}
-        <meshStandardMaterial map={texture} transparent={type === 'glass' || type === 'leaves' || type === 'torch' || type === 'flower' || type === 'water'} opacity={type === 'glass' ? 0.5 : type === 'water' ? 0.6 : 1} />
+        {type === 'grass' ? (
+          <>
+            <meshStandardMaterial attach="material-0" map={textures.grass} />
+            <meshStandardMaterial attach="material-1" map={textures.grass} />
+            <meshStandardMaterial attach="material-2" map={textures.grass_top} />
+            <meshStandardMaterial attach="material-3" map={textures.dirt} />
+            <meshStandardMaterial attach="material-4" map={textures.grass} />
+            <meshStandardMaterial attach="material-5" map={textures.grass} />
+          </>
+        ) : type === 'water' || type === 'glass' ? (
+          <meshPhysicalMaterial 
+            map={texture} 
+            transmission={type === 'glass' ? 0.9 : 0.8}
+            opacity={1}
+            transparent={true}
+            roughness={type === 'glass' ? 0.1 : 0.2}
+            ior={type === 'glass' ? 1.5 : 1.33}
+            thickness={1}
+            side={THREE.FrontSide} 
+          />
+        ) : type === 'torch' ? (
+          <meshStandardMaterial 
+            map={texture} 
+            transparent={true} 
+            alphaTest={0.5}
+            emissive="#ffaa00"
+            emissiveIntensity={1}
+            side={THREE.DoubleSide}
+          />
+        ) : (
+          <meshStandardMaterial 
+            map={texture} 
+            transparent={false} 
+            side={type === 'flower' ? THREE.DoubleSide : THREE.FrontSide} 
+            alphaTest={type === 'leaves' || type === 'flower' ? 0.5 : 0.1} 
+          />
+        )}
       </instancedMesh>
       {type === 'torch' && blocks.map(block => (
         <pointLight 
@@ -286,7 +393,7 @@ const BlockTypeMesh = ({ type, blocks }: { type: string; blocks: any[] }) => {
       ))}
     </>
   );
-};
+});
 
 const PrimedTnt = ({ tnt }: { tnt: { id: string, pos: [number, number, number], progress: number } }) => {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -328,17 +435,8 @@ const PrimedTnt = ({ tnt }: { tnt: { id: string, pos: [number, number, number], 
 };
 
 export const World = () => {
-  const visibleBlocks = useStore((state) => state.visibleBlocks);
+  const blocksByType = useStore((state) => state.blocksByType);
   const primedTnts = useStore((state) => state.primedTnts);
-
-  const blocksByType = useMemo(() => {
-    const grouped: Record<string, any[]> = {};
-    Object.values(visibleBlocks).forEach((block) => {
-      if (!grouped[block.type]) grouped[block.type] = [];
-      grouped[block.type].push(block);
-    });
-    return grouped;
-  }, [visibleBlocks]);
 
   return (
     <>

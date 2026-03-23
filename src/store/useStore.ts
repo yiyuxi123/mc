@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 const noise2D = createNoise2D();
 
-export type BlockType = 'dirt' | 'grass' | 'stone' | 'wood' | 'leaves' | 'glass' | 'iron_ore' | 'wheat_seeds' | 'wheat' | 'chest' | 'npc' | 'torch' | 'flower' | 'tnt' | 'slime' | 'jetpack' | 'water' | 'nuke' | 'laser' | 'bedrock';
+export type BlockType = 'dirt' | 'grass' | 'stone' | 'wood' | 'leaves' | 'glass' | 'iron_ore' | 'wheat_seeds' | 'wheat' | 'chest' | 'npc' | 'torch' | 'flower' | 'tnt' | 'slime' | 'jetpack' | 'water' | 'nuke' | 'laser' | 'bedrock' | 'sand' | 'snow' | 'crafting_table' | 'cactus';
 
 export interface Block {
   id: string;
@@ -42,6 +42,8 @@ interface GameState {
   setTime: (time: number) => void;
   loadedChunks: Record<string, boolean>;
   visibleBlocks: Record<string, Block>;
+  blocksByType: Record<string, Block[]>;
+  isWorldGenerated: boolean;
   
   // Drops
   drops: Drop[];
@@ -70,6 +72,8 @@ interface GameState {
   // Crafting
   isCraftingOpen: boolean;
   setCraftingOpen: (open: boolean) => void;
+  craftingGrid: ({ type: string; count: number } | null)[];
+  setCraftingGrid: (grid: ({ type: string; count: number } | null)[]) => void;
   craftItem: (recipeId: string) => void;
   addToInventory: (type: string, count: number) => void;
   removeFromInventory: (type: string, count: number) => boolean;
@@ -85,14 +89,45 @@ interface GameState {
   updateQuest: (questId: string, value: any) => void;
   npcDialogue: string | null;
   setNpcDialogue: (dialogue: string | null) => void;
+  isRaining: boolean;
+  setRaining: (raining: boolean) => void;
+  weather: 'clear' | 'rain' | 'storm';
+  setWeather: (weather: 'clear' | 'rain' | 'storm') => void;
 }
 
 const getPosKey = (x: number, y: number, z: number) => `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
+
+const computeBlocksByType = (visibleBlocks: Record<string, Block>) => {
+  const grouped: Record<string, Block[]> = {};
+  for (const key in visibleBlocks) {
+    const block = visibleBlocks[key];
+    if (!grouped[block.type]) grouped[block.type] = [];
+    grouped[block.type].push(block);
+  }
+  return grouped;
+};
+
+const addBlockToType = (blocksByType: Record<string, Block[]>, block: Block) => {
+  const newBlocksByType = { ...blocksByType };
+  if (!newBlocksByType[block.type]) newBlocksByType[block.type] = [];
+  newBlocksByType[block.type] = [...newBlocksByType[block.type], block];
+  return newBlocksByType;
+};
+
+const removeBlockFromType = (blocksByType: Record<string, Block[]>, block: Block) => {
+  const newBlocksByType = { ...blocksByType };
+  if (newBlocksByType[block.type]) {
+    newBlocksByType[block.type] = newBlocksByType[block.type].filter(b => b.id !== block.id);
+  }
+  return newBlocksByType;
+};
 
 export const useStore = create<GameState>((set, get) => ({
   blocks: {},
   loadedChunks: {},
   visibleBlocks: {},
+  blocksByType: {},
+  isWorldGenerated: false,
   time: 0,
   setTime: (time) => set({ time }),
   inventory: [
@@ -102,6 +137,7 @@ export const useStore = create<GameState>((set, get) => ({
     { type: 'wood', count: 64 },
     { type: 'leaves', count: 64 },
     { type: 'glass', count: 64 },
+    { type: 'crafting_table', count: 64 },
     { type: 'torch', count: 64 },
     { type: 'tnt', count: 64 },
     { type: 'slime', count: 64 },
@@ -125,9 +161,9 @@ export const useStore = create<GameState>((set, get) => ({
 
   addToInventory: (type, count) => set((state) => {
     const newInv = [...state.inventory];
-    const existing = newInv.find(i => i.type === type);
-    if (existing) {
-      existing.count += count;
+    const existingIndex = newInv.findIndex(i => i.type === type);
+    if (existingIndex !== -1) {
+      newInv[existingIndex] = { ...newInv[existingIndex], count: newInv[existingIndex].count + count };
     } else {
       newInv.push({ type, count });
     }
@@ -138,12 +174,14 @@ export const useStore = create<GameState>((set, get) => ({
     let success = false;
     set((state) => {
       const newInv = [...state.inventory];
-      const existing = newInv.find(i => i.type === type);
-      if (existing && existing.count >= count) {
+      const existingIndex = newInv.findIndex(i => i.type === type);
+      if (existingIndex !== -1 && newInv[existingIndex].count >= count) {
+        const existing = { ...newInv[existingIndex] };
         existing.count -= count;
         if (existing.count === 0) {
-          const idx = newInv.indexOf(existing);
-          newInv.splice(idx, 1);
+          newInv.splice(existingIndex, 1);
+        } else {
+          newInv[existingIndex] = existing;
         }
         success = true;
         return { inventory: newInv };
@@ -168,6 +206,8 @@ export const useStore = create<GameState>((set, get) => ({
     const state = get();
     if (state.blocks[key]) return false;
     
+    const newBlock: Block = { id: uuidv4(), pos: [x, y, z], type };
+    
     // Quest: Build farm
     if (type === 'wheat_seeds') {
       const farmQuest = state.quests.build_farm;
@@ -179,14 +219,16 @@ export const useStore = create<GameState>((set, get) => ({
           setTimeout(() => get().addToInventory('bread', 5), 100);
         }
         set({
-          blocks: { ...state.blocks, [key]: { id: uuidv4(), pos: [x, y, z], type } },
-          visibleBlocks: { ...state.visibleBlocks, [key]: { id: uuidv4(), pos: [x, y, z], type } },
+          blocks: { ...state.blocks, [key]: newBlock },
+          visibleBlocks: { ...state.visibleBlocks, [key]: newBlock },
+          blocksByType: addBlockToType(state.blocksByType, newBlock),
           quests: { ...state.quests, build_farm: { ...farmQuest, progress: newProgress, completed } }
         });
       } else {
         set({ 
-          blocks: { ...state.blocks, [key]: { id: uuidv4(), pos: [x, y, z], type } },
-          visibleBlocks: { ...state.visibleBlocks, [key]: { id: uuidv4(), pos: [x, y, z], type } }
+          blocks: { ...state.blocks, [key]: newBlock },
+          visibleBlocks: { ...state.visibleBlocks, [key]: newBlock },
+          blocksByType: addBlockToType(state.blocksByType, newBlock)
         });
       }
 
@@ -194,10 +236,15 @@ export const useStore = create<GameState>((set, get) => ({
       setTimeout(() => {
         const currentBlocks = get().blocks;
         if (currentBlocks[key] && currentBlocks[key].type === 'wheat_seeds') {
-          set((s) => ({
-            blocks: { ...s.blocks, [key]: { ...s.blocks[key], type: 'wheat' } },
-            visibleBlocks: { ...s.visibleBlocks, [key]: { ...s.visibleBlocks[key], type: 'wheat' } }
-          }));
+          const grownBlock: Block = { ...currentBlocks[key], type: 'wheat' };
+          const s = get();
+          let newBlocksByType = removeBlockFromType(s.blocksByType, currentBlocks[key]);
+          newBlocksByType = addBlockToType(newBlocksByType, grownBlock);
+          set({
+            blocks: { ...s.blocks, [key]: grownBlock },
+            visibleBlocks: { ...s.visibleBlocks, [key]: grownBlock },
+            blocksByType: newBlocksByType
+          });
         }
       }, 10000);
       
@@ -207,12 +254,13 @@ export const useStore = create<GameState>((set, get) => ({
     set({
       blocks: {
         ...state.blocks,
-        [key]: { id: uuidv4(), pos: [x, y, z], type }
+        [key]: newBlock
       },
       visibleBlocks: {
         ...state.visibleBlocks,
-        [key]: { id: uuidv4(), pos: [x, y, z], type }
-      }
+        [key]: newBlock
+      },
+      blocksByType: addBlockToType(state.blocksByType, newBlock)
     });
     return true;
   },
@@ -227,12 +275,16 @@ export const useStore = create<GameState>((set, get) => ({
     delete newBlocks[key];
     const newVisibleBlocks = { ...state.visibleBlocks };
     delete newVisibleBlocks[key];
+    const newBlocksByType = removeBlockFromType(state.blocksByType, block);
     
     // Drops
     if (dropItem) {
       let dropType = block.type as string;
-      if (block.type === 'grass' && Math.random() < 0.3) {
-        get().addDrop('wheat_seeds', [x, y, z]);
+      if (block.type === 'grass') {
+        dropType = 'dirt';
+        if (Math.random() < 0.3) {
+          get().addDrop('wheat_seeds', [x, y, z]);
+        }
       }
       get().addDrop(dropType, [x, y, z]);
     }
@@ -243,12 +295,12 @@ export const useStore = create<GameState>((set, get) => ({
       if (!ruinQuest.completed) {
         state.addChatMessage('任务完成：找到古老遗迹！奖励：1 颗钻石。', 'ai');
         setTimeout(() => get().addToInventory('diamond', 1), 100);
-        set({ blocks: newBlocks, visibleBlocks: newVisibleBlocks, quests: { ...state.quests, find_ruin: { ...ruinQuest, progress: 1, completed: true } } });
+        set({ blocks: newBlocks, visibleBlocks: newVisibleBlocks, blocksByType: newBlocksByType, quests: { ...state.quests, find_ruin: { ...ruinQuest, progress: 1, completed: true } } });
         return;
       }
     }
     
-    set({ blocks: newBlocks, visibleBlocks: newVisibleBlocks });
+    set({ blocks: newBlocks, visibleBlocks: newVisibleBlocks, blocksByType: newBlocksByType });
   },
 
   explode: (x: number, y: number, z: number, radius: number) => {
@@ -256,6 +308,9 @@ export const useStore = create<GameState>((set, get) => ({
     const newBlocks = { ...state.blocks };
     const newVisibleBlocks = { ...state.visibleBlocks };
     let exploded = false;
+    
+    const deletedIdsByType: Record<string, Set<string>> = {};
+    const newDrops: { id: string, type: string, pos: [number, number, number] }[] = [];
 
     for (let dx = -radius; dx <= radius; dx++) {
       for (let dy = -radius; dy <= radius; dy++) {
@@ -263,9 +318,14 @@ export const useStore = create<GameState>((set, get) => ({
           if (dx * dx + dy * dy + dz * dz <= radius * radius) {
             const key = getPosKey(x + dx, y + dy, z + dz);
             if (newBlocks[key] && newBlocks[key].type !== 'bedrock') {
-              if (newBlocks[key].type === 'tnt') {
+              const block = newBlocks[key];
+              
+              if (!deletedIdsByType[block.type]) deletedIdsByType[block.type] = new Set();
+              deletedIdsByType[block.type].add(block.id);
+              
+              if (block.type === 'tnt') {
                 // Chain reaction!
-                const tntPos = newBlocks[key].pos;
+                const tntPos = block.pos;
                 delete newBlocks[key];
                 delete newVisibleBlocks[key];
                 // Add primed TNT with a slight random delay so they don't all explode at the exact same frame
@@ -277,8 +337,8 @@ export const useStore = create<GameState>((set, get) => ({
                 delete newVisibleBlocks[key];
                 exploded = true;
                 // Add some drops randomly
-                if (Math.random() < 0.2) {
-                  get().addDrop('dirt', [x + dx, y + dy, z + dz]);
+                if (Math.random() < 0.1) {
+                  newDrops.push({ id: uuidv4(), type: block.type === 'leaves' ? 'wood' : block.type, pos: [x + dx, y + dy, z + dz] });
                 }
               }
             }
@@ -287,10 +347,19 @@ export const useStore = create<GameState>((set, get) => ({
       }
     }
 
-    if (exploded) {
+    if (exploded || Object.keys(deletedIdsByType).length > 0) {
+      const newBlocksByType = { ...state.blocksByType };
+      for (const type in deletedIdsByType) {
+        if (newBlocksByType[type]) {
+          newBlocksByType[type] = newBlocksByType[type].filter(b => !deletedIdsByType[type].has(b.id));
+        }
+      }
+      
       set({ 
         blocks: newBlocks,
         visibleBlocks: newVisibleBlocks,
+        blocksByType: newBlocksByType,
+        drops: [...state.drops, ...newDrops],
         explosionEvent: { x, y, z, radius, time: Date.now() }
       });
       import('../utils/sounds').then(m => m.playSound('break'));
@@ -328,11 +397,14 @@ export const useStore = create<GameState>((set, get) => ({
               const worldX = startX + bx;
               const worldZ = startZ + bz;
               const y = Math.floor(noise2D(worldX / 40, worldZ / 40) * 10);
+              const tempNoise = noise2D(worldX / 100, worldZ / 100);
               const key = getPosKey(worldX, y, worldZ);
               
               let surfaceType: BlockType = 'grass';
               if (y > 5) surfaceType = 'stone';
               else if (y < -3) surfaceType = 'dirt';
+              else if (tempNoise > 0.5) surfaceType = 'sand';
+              else if (tempNoise < -0.5) surfaceType = 'snow';
               
               newBlocks[key] = { id: uuidv4(), pos: [worldX, y, worldZ], type: surfaceType };
 
@@ -341,7 +413,7 @@ export const useStore = create<GameState>((set, get) => ({
               }
               
               for (let dy = y - 1; dy >= y - 2; dy--) {
-                newBlocks[getPosKey(worldX, dy, worldZ)] = { id: uuidv4(), pos: [worldX, dy, worldZ], type: 'dirt' };
+                newBlocks[getPosKey(worldX, dy, worldZ)] = { id: uuidv4(), pos: [worldX, dy, worldZ], type: surfaceType === 'sand' ? 'sand' : 'dirt' };
               }
               for (let dy = y - 3; dy >= y - 4; dy--) {
                 const isIron = Math.random() < 0.05;
@@ -364,15 +436,41 @@ export const useStore = create<GameState>((set, get) => ({
             const tz = startZ + Math.floor(Math.random() * CHUNK_SIZE);
             if (Math.abs(tx) < 3 && Math.abs(tz) < 3) continue;
             const ty = Math.floor(noise2D(tx / 40, tz / 40) * 10) + 1;
+            const tempNoise = noise2D(tx / 100, tz / 100);
+            
             if (ty <= 5 && ty >= -3) {
-              for (let h = 0; h < 4; h++) newBlocks[getPosKey(tx, ty + h, tz)] = { id: uuidv4(), pos: [tx, ty + h, tz], type: 'wood' };
-              for (let lx = -2; lx <= 2; lx++) {
-                for (let lz = -2; lz <= 2; lz++) {
-                  for (let ly = 3; ly <= 5; ly++) {
-                    if (Math.abs(lx) === 2 && Math.abs(lz) === 2 && ly === 5) continue;
-                    if (lx === 0 && lz === 0 && ly < 5) continue;
-                    const key = getPosKey(tx + lx, ty + ly, tz + lz);
-                    if (!newBlocks[key]) newBlocks[key] = { id: uuidv4(), pos: [tx + lx, ty + ly, tz + lz], type: 'leaves' };
+              if (tempNoise > 0.5) {
+                // Desert: Cactus
+                if (Math.random() < 0.3) {
+                  const h = 2 + Math.floor(Math.random() * 3);
+                  for (let y = 0; y < h; y++) {
+                    newBlocks[getPosKey(tx, ty + y, tz)] = { id: uuidv4(), pos: [tx, ty + y, tz], type: 'cactus' };
+                  }
+                }
+              } else if (tempNoise < -0.5) {
+                // Snow: Pine tree
+                for (let h = 0; h < 5; h++) newBlocks[getPosKey(tx, ty + h, tz)] = { id: uuidv4(), pos: [tx, ty + h, tz], type: 'wood' };
+                for (let ly = 2; ly <= 6; ly++) {
+                  const radius = ly === 6 ? 1 : (ly % 2 === 0 ? 2 : 1);
+                  for (let lx = -radius; lx <= radius; lx++) {
+                    for (let lz = -radius; lz <= radius; lz++) {
+                      if (lx === 0 && lz === 0 && ly < 5) continue;
+                      const key = getPosKey(tx + lx, ty + ly, tz + lz);
+                      if (!newBlocks[key]) newBlocks[key] = { id: uuidv4(), pos: [tx + lx, ty + ly, tz + lz], type: 'leaves' };
+                    }
+                  }
+                }
+              } else {
+                // Normal tree
+                for (let h = 0; h < 4; h++) newBlocks[getPosKey(tx, ty + h, tz)] = { id: uuidv4(), pos: [tx, ty + h, tz], type: 'wood' };
+                for (let lx = -2; lx <= 2; lx++) {
+                  for (let lz = -2; lz <= 2; lz++) {
+                    for (let ly = 3; ly <= 5; ly++) {
+                      if (Math.abs(lx) === 2 && Math.abs(lz) === 2 && ly === 5) continue;
+                      if (lx === 0 && lz === 0 && ly < 5) continue;
+                      const key = getPosKey(tx + lx, ty + ly, tz + lz);
+                      if (!newBlocks[key]) newBlocks[key] = { id: uuidv4(), pos: [tx + lx, ty + ly, tz + lz], type: 'leaves' };
+                    }
                   }
                 }
               }
@@ -400,7 +498,9 @@ export const useStore = create<GameState>((set, get) => ({
       blocks: newBlocks, 
       loadedChunks: newLoadedChunks, 
       visibleBlocks: newVisibleBlocks,
-      lastChunkKey: currentChunkKey 
+      blocksByType: computeBlocksByType(newVisibleBlocks),
+      lastChunkKey: currentChunkKey,
+      isWorldGenerated: true
     } as any);
   },
   
@@ -411,9 +511,15 @@ export const useStore = create<GameState>((set, get) => ({
     // Add NPC and Ruin near spawn
     const state = get();
     const newBlocks = { ...state.blocks };
+    const newVisibleBlocks = { ...state.visibleBlocks };
+    let newBlocksByType = { ...state.blocksByType };
     
     // NPC
-    newBlocks[getPosKey(0, Math.floor(noise2D(0, 0) * 10) + 1, 5)] = { id: uuidv4(), pos: [0, Math.floor(noise2D(0, 0) * 10) + 1, 5], type: 'npc' };
+    const npcPos = [0, Math.floor(noise2D(0, 0) * 10) + 1, 5] as [number, number, number];
+    const npcBlock = { id: uuidv4(), pos: npcPos, type: 'npc' as BlockType };
+    newBlocks[getPosKey(...npcPos)] = npcBlock;
+    newVisibleBlocks[getPosKey(...npcPos)] = npcBlock;
+    newBlocksByType = addBlockToType(newBlocksByType, npcBlock);
     
     // Ancient Ruin
     const rx = 15;
@@ -423,14 +529,22 @@ export const useStore = create<GameState>((set, get) => ({
       for (let z = -2; z <= 2; z++) {
         for (let y = 0; y < 4; y++) {
           if (x === -2 || x === 2 || z === -2 || z === 2 || y === 3) {
-            newBlocks[getPosKey(rx + x, ry + y, rz + z)] = { id: uuidv4(), pos: [rx + x, ry + y, rz + z], type: 'stone' };
+            const pos = [rx + x, ry + y, rz + z] as [number, number, number];
+            const block = { id: uuidv4(), pos, type: 'stone' as BlockType };
+            newBlocks[getPosKey(...pos)] = block;
+            newVisibleBlocks[getPosKey(...pos)] = block;
+            newBlocksByType = addBlockToType(newBlocksByType, block);
           }
         }
       }
     }
-    newBlocks[getPosKey(rx, ry, rz)] = { id: uuidv4(), pos: [rx, ry, rz], type: 'chest' };
+    const chestPos = [rx, ry, rz] as [number, number, number];
+    const chestBlock = { id: uuidv4(), pos: chestPos, type: 'chest' as BlockType };
+    newBlocks[getPosKey(...chestPos)] = chestBlock;
+    newVisibleBlocks[getPosKey(...chestPos)] = chestBlock;
+    newBlocksByType = addBlockToType(newBlocksByType, chestBlock);
     
-    set({ blocks: newBlocks });
+    set({ blocks: newBlocks, visibleBlocks: newVisibleBlocks, blocksByType: newBlocksByType });
   },
   
   chatMessages: [{ id: uuidv4(), text: '欢迎来到 AI Craft！按 T 与 AI 向导聊天，或按 I 分析图像。按 C 打开制作菜单。', sender: 'ai' }],
@@ -442,6 +556,8 @@ export const useStore = create<GameState>((set, get) => ({
   
   health: 20,
   hunger: 20,
+  weather: 'clear' as 'clear' | 'rain' | 'storm',
+  setWeather: (weather: 'clear' | 'rain' | 'storm') => set({ weather }),
   setHealth: (h) => set({ health: Math.max(0, Math.min(20, h)) }),
   setHunger: (h) => set({ hunger: Math.max(0, Math.min(20, h)) }),
   eatFood: () => {
@@ -455,6 +571,8 @@ export const useStore = create<GameState>((set, get) => ({
   
   isCraftingOpen: false,
   setCraftingOpen: (open) => set({ isCraftingOpen: open }),
+  craftingGrid: Array(9).fill(null),
+  setCraftingGrid: (grid) => set({ craftingGrid: grid }),
   craftItem: (recipeId) => {
     const state = get();
     if (recipeId === 'iron_pickaxe' && state.removeFromInventory('iron_ore', 10)) {
@@ -466,6 +584,8 @@ export const useStore = create<GameState>((set, get) => ({
       }
     } else if (recipeId === 'wooden_axe' && state.removeFromInventory('wood', 5)) {
       state.addToInventory('wooden_axe', 1);
+    } else if (recipeId === 'chest' && state.removeFromInventory('wood', 8)) {
+      state.addToInventory('chest', 1);
     } else if (recipeId === 'bread' && state.removeFromInventory('wheat', 3)) {
       state.addToInventory('bread', 1);
     } else if (recipeId === 'torch' && state.removeFromInventory('wood', 1)) {
@@ -496,5 +616,7 @@ export const useStore = create<GameState>((set, get) => ({
   },
   
   npcDialogue: null,
-  setNpcDialogue: (dialogue) => set({ npcDialogue: dialogue })
+  setNpcDialogue: (dialogue) => set({ npcDialogue: dialogue }),
+  isRaining: false,
+  setRaining: (raining) => set({ isRaining: raining })
 }));
